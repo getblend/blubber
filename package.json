@@ -21,7 +21,8 @@
     "@oclif/plugin-help": "^5",
     "@oclif/plugin-plugins": "^2.0.1",
     "axios": "^0.27.2",
-    "crypto": "^1.0.1"
+    "crypto": "^1.0.1",
+    "winston": "^3.8.1"
   },
   "devDependencies": {
     "@oclif/test": "^2",
@@ -64,7 +65,8 @@
     "posttest": "yarn lint",
     "prepack": "yarn build && oclif manifest && oclif readme",
     "test": "mocha --forbid-only \"test/**/*.test.ts\"",
-    "version": "oclif readme && git add README.md"
+    "version": "oclif readme && git add README.md",
+    "start": "./bin/run upload -s demo"
   },
   "engines": {
     "node": ">=16.0.0"
