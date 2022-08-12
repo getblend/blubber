@@ -1,7 +1,7 @@
 import {Command, Flags} from '@oclif/core'
 
+import cuid from 'cuid'
 import axios from 'axios'
-import {pipeline} from 'node:stream'
 import sharp from 'sharp'
 import {
   await$,
@@ -9,6 +9,7 @@ import {
   Flags as UploadFlags,
   root,
 } from '../../modules/blob'
+import {createPost} from '../../modules/createPost'
 import {
   computeBlurhash,
   computeHash,
@@ -20,6 +21,15 @@ const SHEETS_URI =
   'https://script.google.com/macros/s/AKfycbwUdXppuWQW-V1ovdqwFxSO6U8UFoQBjP15tPAa9Wc4pdOAHySWlCE-2_LJA9-T5xiT/exec'
 
 type BlobContainer = 'users' | 'restaurants' | 'imagePosts'
+
+type CompressedOutput = {
+  originalFilename: string
+  hashedFilename: string
+  blurhash: string
+  id: string
+  height: number
+  width: number
+}
 
 export default class Upload extends Command {
   static description = 'begin uploading content'
@@ -43,7 +53,7 @@ export default class Upload extends Command {
 
   private readonly cache: Record<
     BlobContainer,
-    Record<string, {file: string; name: string; blurhash: string}>
+    Record<string, CompressedOutput>
   > = {
     users: {},
     restaurants: {},
@@ -64,8 +74,53 @@ export default class Upload extends Command {
         ...this.uploadAssets(flags, page),
       ]
       await Promise.all(promises)
+      const posts = await Promise.all(this.uploadPosts(flags, page))
+      this.log('Posts.', posts)
     }
+
     this.log('Done.', this.cache)
+  }
+
+  private uploadPosts(flags: UploadFlags, page: Collection<Node>) {
+    const log = logger('postsUpload')
+    log.info(`Uploading ${page.nodes.length} posts`)
+
+    const promises = []
+    for (const item of page.nodes) {
+      const {creator, description, file, id, store} = item
+      log.info(`Uploading profile for ${file}`)
+
+      const promise = (async () => {
+        try {
+          const {status, data} = await createPost({
+            // image data
+            id: this.cache.imagePosts[file].id,
+            blurhash: this.cache.imagePosts[file].blurhash,
+            description,
+            height: this.cache.imagePosts[file].height,
+            width: this.cache.imagePosts[file].width,
+            image: this.cache.imagePosts[file].hashedFilename,
+
+            // creator data
+            creatorId: this.cache.users[creator].id,
+            profile: this.cache.users[creator].hashedFilename,
+            username: creator,
+          })
+          if (status !== 200) {
+            throw new Error("Couldn't create post")
+          }
+          log.info(`Created post: ${file}`)
+          return data
+        } catch (error) {
+          log.error(`Couldn't create post: ${file}`)
+          log.error(error)
+        }
+      })()
+
+      promises.push(promise)
+    }
+
+    return promises
   }
 
   /** Upload the profile images to blob storage  */
@@ -75,7 +130,7 @@ export default class Upload extends Command {
 
     const promises = []
     for (const item of page.nodes) {
-      const {vin: profile} = item
+      const {creator: profile} = item
       log.info(`Uploading profile for ${profile}`)
       promises.push(this.uploadImage(flags, profile, 'users'))
     }
@@ -90,7 +145,7 @@ export default class Upload extends Command {
 
     const promises = []
     for (const item of page.nodes) {
-      const {vin: image} = item
+      const {file: image} = item
       log.info(`Uploading assets for ${image}`)
       promises.push(this.uploadImage(flags, image, 'imagePosts'))
     }
@@ -102,7 +157,7 @@ export default class Upload extends Command {
     flags: UploadFlags,
     image: string,
     scope: BlobContainer,
-  ): Promise<{file: string; name: string; blurhash: string}> {
+  ): Promise<CompressedOutput> {
     if (this.cache[scope][image]) {
       return this.cache[scope][image]
     }
@@ -110,7 +165,7 @@ export default class Upload extends Command {
     const image$ = sharp(root(flags, `sources/${scope}/${image}.jpg`))
     const compressed$ = transform.compressed(image$)
 
-    const [name, blurhash] = await Promise.all([
+    const [name, {blurhash, width, height}] = await Promise.all([
       computeHash(compressed$),
       computeBlurhash(compressed$),
     ])
@@ -146,9 +201,12 @@ export default class Upload extends Command {
     }
 
     this.cache[scope][image] = {
-      file: image,
-      name,
+      originalFilename: image,
+      hashedFilename: name,
       blurhash,
+      id: cuid(),
+      height,
+      width,
     }
 
     return this.cache[scope][image]
@@ -180,7 +238,10 @@ export default class Upload extends Command {
 
 export interface Node {
   id: string
-  vin: string
+  file: string
+  creator: string
+  store: string
+  description: string
 }
 
 export interface Collection<TNode> {

@@ -29,7 +29,7 @@ export const transform = {
 
 export async function computeBlurhash(
   sharpStream: sharp.Sharp,
-): Promise<string> {
+): Promise<{blurhash: string; height: number; width: number}> {
   const {
     data,
     info: {width, height},
@@ -39,7 +39,11 @@ export async function computeBlurhash(
     .ensureAlpha()
     .resize(32, 32, {fit: 'inside'})
     .toBuffer({resolveWithObject: true})
-  return encode(new Uint8ClampedArray(data), width, height, 4, 4)
+  return {
+    blurhash: encode(new Uint8ClampedArray(data), width, height, 4, 4),
+    height,
+    width,
+  }
 }
 
 export function computeHash(sharpStream: sharp.Sharp): Promise<string> {
