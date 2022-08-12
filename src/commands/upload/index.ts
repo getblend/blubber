@@ -36,6 +36,8 @@ export default class Upload extends Command {
 
   async run(): Promise<void> {
     const {args, flags} = await this.parse(Upload)
+    const profilesCache = new Map<string, string>()
+    const postsCache = new Map<string, string>()
 
     const data = await getDataFromSheets()
     for await (const batch of data) {
@@ -43,18 +45,17 @@ export default class Upload extends Command {
         break
       }
 
-      this.log('Processing batch of ' + batch.length + ' items')
+      this.log(
+        'Processing batch of ' + batch.length + ' items',
+        ...batch.map((item) => item.vin),
+      )
 
-      const profilesCache = new Map<string, string>()
-      const postsCache = new Map<string, string>()
-
-      const [profileMap, assetMap] = await Promise.all([
-        uploadProfiles(flags, batch, profilesCache),
-        uploadAssets(flags, batch, postsCache),
-      ])
-
+      const profileMap = await uploadProfiles(flags, batch, profilesCache)
+      const assetMap = await uploadAssets(flags, batch, postsCache)
       await uploadPosts(flags, batch, profileMap, assetMap)
     }
+
+    this.log('Done')
   }
 }
 
@@ -110,17 +111,22 @@ async function uploadAssets(
   batch: Node[],
   cache: Map<string, string> = new Map(),
 ): Promise<Map<string, string>> {
-  for (const node of batch) {
-    const {vin: image} = node
-    console.log(`Uploading assets for ${image}`)
+  try {
+    for (const node of batch) {
+      const {vin: image} = node
+      console.log(`\nUploading assets for ${image}`)
 
-    if (!image) {
-      continue
+      if (!image) {
+        continue
+      }
+      const uploadedImage = await uploadImage(flags, image, 'imagePosts')
+      cache.set(uploadedImage.file, uploadedImage.name)
     }
-    const uploadedImage = await uploadImage(flags, image, 'imagePosts')
-    cache.set(uploadedImage.file, uploadedImage.name)
+    return cache
+  } catch (e) {
+    console.error(e)
+    throw e
   }
-  return cache
 }
 
 /** Upload the profile images to blob storage  */
@@ -131,7 +137,7 @@ async function uploadProfiles(
 ): Promise<Map<string, string>> {
   for (const node of batch) {
     const {vin: profile} = node
-    console.log(`Uploading profile for ${profile}`)
+    console.log(`\nUploading profile for ${profile}`)
 
     if (!profile) {
       continue
@@ -151,7 +157,7 @@ async function uploadImage(
   file: string
   name: string
 }> {
-  const sharpStream = sharp(root(flags, `sources/${scope}/${image}.png`))
+  const sharpStream = sharp(root(flags, `sources/${scope}/${image}.jpg`))
   const compressed = sharpStream
     .clone()
     .resize({
@@ -177,14 +183,17 @@ async function uploadImage(
 
     case 'imagePosts': {
       compressed.clone().pipe(uploadStream)
+      // const originalUploadStream = makeBlobStream(
+      //   flags,
+      //   scope,
+      //   `orig.${name}`,
+      // )
+      // sharpStream.clone().jpeg({quality: 100}).pipe(originalUploadStream)
+      // await awaitStream(originalUploadStream)
 
-      const originalUploadStream = makeBlobStream(flags, scope, `orig.${name}`)
-      sharpStream.clone().jpeg({quality: 100}).pipe(originalUploadStream)
-      await awaitStream(originalUploadStream)
       break
     }
   }
-
   await awaitStream(uploadStream)
   return {
     file: image,
@@ -220,7 +229,6 @@ function generateBlurhash(sharpStream: sharp.Sharp): Promise<string> {
 
 function root(flags: Flags, ...paths: string[]): string {
   const location = path.resolve(flags.src, ...paths)
-  console.log(`Accessing: ${location}`)
   return location
 }
 
@@ -240,7 +248,9 @@ function makeBlobStream(
   scope: string,
   name: string,
 ): fs.WriteStream {
-  return fs.createWriteStream(root(flags, `blobs/${scope}/${name}.png`))
+  return fs.createWriteStream(root(flags, `generated/${scope}/${name}.jpg`), {
+    flags: 'w',
+  })
 }
 
 function awaitStream<T extends NodeJS.WritableStream>(stream: T): Promise<T> {
